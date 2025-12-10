@@ -1,6 +1,6 @@
-const path = require("node:path");
-const fs = require("node:fs/promises");
 const express = require("express");
+const path = require("path");
+const fs = require("fs/promises");
 
 // Constants
 const PORT = process.env.PORT || 3000;
@@ -93,7 +93,7 @@ const db = {
 // ============================================
 
 // Attach Utils to Request Object
-app.use((req, _, next) => {
+app.use((req, res, next) => {
   req.utils = utils;
   req.db = db;
   next();
@@ -158,6 +158,28 @@ app.get("/user/filter", async (req, res, next) => {
     }
 
     res.status(200).json(filteredUsers);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Route → GET /user/:id - Get User by ID
+app.get("/user/:id", async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+
+    if (isNaN(id)) {
+      throw new AppError(400, "Invalid User ID!");
+    }
+
+    const users = await req.db.getUsers(true); // Use Cache
+    const user = users.find((u) => u.id === id);
+
+    if (!user) {
+      return res.status(404).json({ message: "User NOT Found!" });
+    }
+
+    res.status(200).json(user);
   } catch (err) {
     next(err);
   }
@@ -299,12 +321,12 @@ app.delete("/user/:id", async (req, res, next) => {
 // ============================================
 
 // 404 Handler - Route NOT Found
-app.use((_, res) => {
+app.use((req, res) => {
   res.status(404).json({ message: "Route NOT Found!" });
 });
 
 // Global Error Handler
-app.use((err, _, res) => {
+app.use((err, req, res, next) => {
   if (err instanceof AppError) {
     return res.status(err.statusCode).json({ message: err.message });
   }
@@ -318,6 +340,6 @@ app.use((err, _, res) => {
 // START SERVER
 // ============================================
 app.listen(PORT, () => {
-  console.log(`🚀 Server Running on http://localhost:${PORT}`);
+  console.log("🚀 Server Running on http://localhost:" + PORT);
   console.log("📁 Users File:", filePath);
 });
