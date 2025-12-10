@@ -1,17 +1,20 @@
+const path = require("node:path");
+const fs = require("node:fs/promises");
 const express = require("express");
-const path = require("path");
-const fs = require("fs/promises");
 
 // Constants
 const PORT = process.env.PORT || 3000;
-const filePath = path.resolve("./users.json");
+const MIN_AGE = process.env.MIN_AGE || 18;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_REQUEST_BODY_SIZE = process.env.MAX_REQUEST_BODY_SIZE || "1mb";
+
+const filePath = path.resolve("./users.json");
 
 // Initialize Express App
 const app = express();
 
 // Middleware
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: MAX_REQUEST_BODY_SIZE }));
 app.use(express.urlencoded({ extended: true }));
 
 // Cache to Avoid Reading File on EVERY Request
@@ -36,7 +39,7 @@ const utils = {
 
   // Validation → Check Age
   isValidAge(age) {
-    return typeof age === "number" && age > 0 && Number.isInteger(age);
+    return Number.isFinite(age) && age > MIN_AGE && Number.isInteger(age);
   },
 
   // Sanitize User Input
@@ -93,7 +96,7 @@ const db = {
 // ============================================
 
 // Attach Utils to Request Object
-app.use((req, res, next) => {
+app.use((req, _, next) => {
   req.utils = utils;
   req.db = db;
   next();
@@ -118,15 +121,13 @@ app.get("/user/getByName", async (req, res, next) => {
   try {
     const { name } = req.query;
 
-    if (!name) {
-      throw new AppError(400, "Name Query Parameter is Required!");
-    }
+    if (!name) throw new AppError(400, "Name Query Parameter is Required!");
 
     const users = await req.db.getUsers(true); // Use Cache
     const user = users.find((u) => u.name.toLowerCase() === name.toLowerCase());
 
     if (!user) {
-      return res.status(404).json({ message: "NO User with Such Name Found!" });
+      return res.status(404).json({ message: "NO User Found with Such Name!" });
     }
 
     res.status(200).json(user);
@@ -140,15 +141,12 @@ app.get("/user/filter", async (req, res, next) => {
   try {
     const { minAge } = req.query;
 
-    if (!minAge) {
-      throw new AppError(400, "minAge Query Parameter is Required!");
-    }
+    if (!minAge) throw new AppError(400, "minAge Query Parameter is Required!");
 
     const minAgeNum = parseInt(minAge, 10);
 
-    if (isNaN(minAgeNum) || minAgeNum < 0) {
+    if (isNaN(minAgeNum) || minAgeNum < 0)
       throw new AppError(400, "minAge MUST be a Valid Positive Number!");
-    }
 
     const users = await req.db.getUsers(true); // Use Cache
     const filteredUsers = users.filter((u) => u.age >= minAgeNum);
@@ -168,9 +166,7 @@ app.get("/user/:id", async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
 
-    if (isNaN(id)) {
-      throw new AppError(400, "Invalid User ID!");
-    }
+    if (isNaN(id)) throw new AppError(400, "Invalid User ID!");
 
     const users = await req.db.getUsers(true); // Use Cache
     const user = users.find((u) => u.id === id);
@@ -191,35 +187,31 @@ app.post("/user", async (req, res, next) => {
     const sanitized = req.utils.sanitizeUser(req.body);
 
     // Validate Required Fields
-    if (!sanitized.name || !sanitized.email || !sanitized.age) {
+    if (!sanitized.name || !sanitized.email || !sanitized.age)
       throw new AppError(422, "Name, Email, and Age are Required!");
-    }
 
     // Validate Email Format
-    if (!req.utils.isValidEmail(sanitized.email)) {
+    if (!req.utils.isValidEmail(sanitized.email))
       throw new AppError(422, "Invalid Email Format!");
-    }
 
     // Validate Age
-    if (!req.utils.isValidAge(sanitized.age)) {
-      throw new AppError(422, "Age MUST be a Positive Integer!");
-    }
+    if (!req.utils.isValidAge(sanitized.age))
+      throw new AppError(
+        422,
+        `Age MUST be a Positive Integer Greater than ${MIN_AGE}!`
+      );
 
     // Read Users (DON'T Use Cache, We Need Fresh Data)
     const users = await req.db.getUsers(false);
 
     // Check for Duplicate Email
     const existingUser = users.find((u) => u.email === sanitized.email);
-    if (existingUser) {
-      throw new AppError(409, "Email ALREADY Exists!");
-    }
+    if (existingUser) throw new AppError(409, "Email ALREADY Exists!");
 
     // Create New User
     const newUser = {
+      ...sanitized,
       id: Date.now(),
-      name: sanitized.name,
-      email: sanitized.email,
-      age: sanitized.age,
     };
 
     users.push(newUser);
@@ -236,44 +228,38 @@ app.patch("/user/:id", async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
 
-    if (isNaN(id)) {
-      throw new AppError(400, "Invalid User ID!");
-    }
+    if (isNaN(id)) throw new AppError(400, "Invalid User ID!");
 
     const sanitized = req.utils.sanitizeUser(req.body);
 
     // At Least One Field MUST be Provided
-    if (!sanitized.name && !sanitized.email && !sanitized.age) {
+    if (!sanitized.name && !sanitized.email && !sanitized.age)
       throw new AppError(422, "At Least One Field MUST be Provided!");
-    }
 
     // Validate Email IF Provided
-    if (sanitized.email && !req.utils.isValidEmail(sanitized.email)) {
+    if (sanitized.email && !req.utils.isValidEmail(sanitized.email))
       throw new AppError(422, "Invalid Email Format!");
-    }
 
     // Validate Age IF Provided
-    if (sanitized.age !== undefined && !req.utils.isValidAge(sanitized.age)) {
-      throw new AppError(422, "Age MUST be a Positive Integer!");
-    }
+    if (sanitized.age !== undefined && !req.utils.isValidAge(sanitized.age))
+      throw new AppError(
+        422,
+        `Age MUST be a Positive Integer Greater than ${MIN_AGE}!`
+      );
 
     // Read Users (DON'T Use Cache)
     const users = await req.db.getUsers(false);
 
     // Find User
     const userIndex = users.findIndex((u) => u.id === id);
-    if (userIndex === -1) {
-      throw new AppError(404, "User NOT Found!");
-    }
+    if (userIndex === -1) throw new AppError(404, "User NOT Found!");
 
     // Check for Duplicate Email IF Email is being Updated
     if (sanitized.email) {
       const duplicate = users.find(
         (u) => u.email === sanitized.email && u.id !== id
       );
-      if (duplicate) {
-        throw new AppError(409, "Email ALREADY Exists!");
-      }
+      if (duplicate) throw new AppError(409, "Email ALREADY Exists!");
     }
 
     // Update User
@@ -294,9 +280,7 @@ app.delete("/user/:id", async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
 
-    if (isNaN(id)) {
-      throw new AppError(400, "Invalid User ID!");
-    }
+    if (isNaN(id)) throw new AppError(400, "Invalid User ID!");
 
     // Read Users (DON'T Use Cache)
     const users = await req.db.getUsers(false);
@@ -321,12 +305,12 @@ app.delete("/user/:id", async (req, res, next) => {
 // ============================================
 
 // 404 Handler - Route NOT Found
-app.use((req, res) => {
+app.use((_, res) => {
   res.status(404).json({ message: "Route NOT Found!" });
 });
 
 // Global Error Handler
-app.use((err, req, res, next) => {
+app.use((err, _, res) => {
   if (err instanceof AppError) {
     return res.status(err.statusCode).json({ message: err.message });
   }
